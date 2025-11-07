@@ -1,0 +1,214 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Brew Monitor (Demo-ready)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+  <style>
+    :root{--b:#111;--t:#222;--g:#666;--bd:#ddd}
+    body{font-family:system-ui,Segoe UI,Arial;margin:0;padding:20px;max-width:980px}
+    header{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+    .stat{border:1px solid var(--bd);border-radius:12px;padding:8px 12px}
+    label{font-weight:600;margin-right:6px}
+    select,input,button{padding:6px 10px;border:1px solid #ccc;border-radius:10px}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0}
+    canvas{width:100%;height:440px}
+    .note{color:#555;font-size:12px;margin-top:6px}
+    code{background:#f6f6f6;padding:2px 6px;border-radius:6px}
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="stat"><b>Device:</b> <span id="deviceName">—</span></div>
+  <div class="stat"><b>Session:</b> <span id="sessionId">—</span></div>
+  <div class="stat"><b>Total runs:</b> <span id="runCount">0</span></div>
+  <div class="stat"><b>Total time:</b> <span id="totalTime">0 min</span></div>
+  <div class="stat"><b>Efficiency:</b> <span id="efficiency">—</span></div>
+</header>
+
+<div class="row">
+  <label>Graph:</label>
+  <select id="series">
+    <option value="temp">Temperature Avg (°C)</option>
+    <option value="load">Load Avg (g)</option>
+    <option value="rate">Rate dM/dt (g/h)</option>
+    <option value="eff">Efficiency (g / °C·h)</option>
+  </select>
+
+  <label>Repeat (X minutes):</label>
+  <input id="xmins" type="number" min="1" value="5" style="width:80px">
+
+  <label>Target Temp (°C):</label>
+  <input id="tset" type="number" step="0.1" value="20" style="width:90px">
+
+  <button id="refresh">Refresh</button>
+  <label><input type="checkbox" id="auto" checked> Auto-refresh</label>
+</div>
+
+<div class="row">
+  <label>Mode:</label>
+  <select id="mode">
+    <option value="demo">Demo (mock data)</option>
+    <option value="live">Live (fetch URL)</option>
+  </select>
+
+  <label>Device ID:</label>
+  <input id="device" placeholder="fermenter1" value="fermenter1" style="width:140px">
+
+  <label>Live URL:</label>
+  <input id="url" placeholder="https://your-api.example.com/data/fermenter1" style="flex:1;min-width:260px">
+</div>
+
+<canvas id="chart"></canvas>
+<div class="note">
+  Live API should return JSON: 
+  <code>[{ "run":1, "temp_avg":20.3, "load_avg":10542.1, "ts": 1730947200000, "session":"abc123" }, ...]</code><br>
+  “Efficiency” = (cumulative mass loss) / (degree-hours from target).
+</div>
+
+<script>
+let chart;
+
+function render(labels, values, yLabel){
+  const ctx = document.getElementById('chart');
+  if (chart) chart.destroy();
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets: [{ label: yLabel, data: values, tension: 0.2 }] },
+    options: {
+      responsive:true, animation:false,
+      scales:{
+        x:{title:{display:true,text:"Run # (each = X minutes)"}},
+        y:{title:{display:true,text:yLabel}}
+      },
+      plugins:{legend:{display:false}}
+    }
+  });
+}
+
+function sum(a){return a.reduce((s,x)=>s+(Number.isFinite(x)?x:0),0);}
+
+function computeRate(load, XMIN){
+  // centered difference, g/h
+  const r=[]; 
+  for(let i=0;i<load.length;i++){
+    if(i===0||i===load.length-1){ r.push(NaN); continue; }
+    const dt_h = (2*XMIN)/60.0;
+    r.push((load[i-1]-load[i+1]) / dt_h); // positive = losing mass
+  }
+  return r;
+}
+
+function totalsAndEfficiency(temp, load, XMIN, TSET){
+  const runs = Math.min(temp.length, load.length);
+  if (runs < 2) return { runs, totalMin: runs*XMIN, effText:"—" };
+
+  const first = load.find(Number.isFinite), last = [...load].reverse().find(Number.isFinite);
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return { runs, totalMin: runs*XMIN, effText:"—" };
+
+  const totalLoss = Math.max(0, first - last); // g
+  const degHours  = sum(temp.map(v=>Number.isFinite(v)?Math.abs(v - TSET):0)) * (XMIN/60);
+  const eff = degHours>0 ? (totalLoss/degHours) : totalLoss;
+  return { runs, totalMin: runs*XMIN, effText: `${eff.toFixed(2)} g/°C·h (loss=${totalLoss.toFixed(1)} g, dev=${degHours.toFixed(2)} °C·h)` };
+}
+
+// -------- DEMO DATA --------
+function demoData(device){
+  // make 60 runs of mock data w/ slight temp drift and mass loss
+  const N=60, XMIN = Number(document.getElementById('xmins').value)||5;
+  const baseT = 20 + (Math.random()*0.8-0.4);
+  let mass0 = 11000 + Math.random()*800;
+  const session = 'demo-'+Math.floor(Math.random()*1e6);
+  const arr=[];
+  for(let i=1;i<=N;i++){
+    const t = baseT + Math.sin(i/10)*0.8 + (Math.random()*0.2-0.1);
+    mass0 -= Math.max(0, (Math.sin(i/9)+1.2))* (Math.random()*2.0+1.5); // decreasing
+    arr.push({ run:i, temp_avg: t, load_avg: mass0, ts: Date.now()- (N-i)*XMIN*60000, session });
+  }
+  return arr;
+}
+
+// -------- FETCH live data (expects JSON array as described) --------
+async function fetchLive(url){
+  const r = await fetch(url, {cache:"no-store"});
+  if(!r.ok) throw new Error(`Fetch failed ${r.status}`);
+  return r.json();
+}
+
+async function loadAndDraw(){
+  const choice = document.getElementById('series').value;
+  const XMIN   = Math.max(1, Number(document.getElementById('xmins').value)||5);
+  const TSET   = Number(document.getElementById('tset').value)||20;
+  const mode   = document.getElementById('mode').value;
+  const device = document.getElementById('device').value.trim() || "fermenter1";
+  const url    = document.getElementById('url').value.trim();
+
+  document.getElementById('deviceName').textContent = device;
+
+  let rows;
+  if (mode === 'demo' || !url) {
+    rows = demoData(device);
+  } else {
+    try { rows = await fetchLive(url); }
+    catch(e){ console.error(e); rows = demoData(device); }
+  }
+
+  // sort by run, focus on latest session (if provided)
+  rows = rows.sort((a,b)=>a.run-b.run);
+  const sessions = [...new Set(rows.map(r=>r.session||'default'))];
+  const currentSession = sessions[sessions.length-1];
+  document.getElementById('sessionId').textContent = currentSession;
+  rows = rows.filter(r=> (r.session||'default') === currentSession);
+
+  const labels = rows.map(r=> r.run);
+  const temp   = rows.map(r=> Number(r.temp_avg));
+  const load   = rows.map(r=> Number(r.load_avg));
+  const rate   = computeRate(load, XMIN);
+
+  const totals = totalsAndEfficiency(temp, load, XMIN, TSET);
+  document.getElementById('runCount').textContent = totals.runs;
+  document.getElementById('totalTime').textContent = `${totals.totalMin} min (${(totals.totalMin/60).toFixed(2)} h)`;
+  document.getElementById('efficiency').textContent = totals.effText;
+
+  if (choice === 'temp') {
+    render(labels, temp, "Temperature Avg (°C)");
+  } else if (choice === 'load') {
+    render(labels, load, "Load Avg (g)");
+  } else if (choice === 'rate') {
+    render(labels, rate, "Rate dM/dt (g/h)");
+  } else {
+    // Efficiency view: plot cumulative loss vs run
+    const cum = load.map(v=> Number.isFinite(load[0]) && Number.isFinite(v) ? Math.max(0, load[0]-v) : NaN);
+    render(labels, cum, "Cumulative Mass Loss (g)");
+  }
+}
+
+document.getElementById('refresh').addEventListener('click', loadAndDraw);
+document.getElementById('series').addEventListener('change', loadAndDraw);
+document.getElementById('xmins').addEventListener('change', loadAndDraw);
+document.getElementById('tset').addEventListener('change', loadAndDraw);
+document.getElementById('mode').addEventListener('change', loadAndDraw);
+document.getElementById('device').addEventListener('change', loadAndDraw);
+document.getElementById('url').addEventListener('change', loadAndDraw);
+
+let timer = null;
+function tick(){
+  if (document.getElementById('auto').checked){
+    loadAndDraw();
+  }
+}
+document.getElementById('auto').addEventListener('change', ()=>{
+  if (timer){ clearInterval(timer); timer=null; }
+  if (document.getElementById('auto').checked){
+    timer = setInterval(tick, 15000); // refresh every 15s
+  }
+});
+timer = setInterval(tick, 15000);
+
+loadAndDraw();
+</script>
+
+</body>
+</html>
