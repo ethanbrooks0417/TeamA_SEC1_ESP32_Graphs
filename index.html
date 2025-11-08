@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Brew Monitor (Demo)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 30px; max-width: 900px; }
+    h1 { margin-bottom: 10px; }
+    label { font-weight: 600; margin-right: 6px; }
+    select, button { padding: 6px 10px; border-radius: 6px; border: 1px solid #ccc; }
+    canvas { width: 100%; height: 400px; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <h1>Brew Monitor (Demo)</h1>
+  <p>This version runs demo data locally — no ESP32 needed yet.</p>
+
+  <label for="series">Graph:</label>
+  <select id="series">
+    <option value="temp">Temperature Avg (°C)</option>
+    <option value="load">Load Avg (g)</option>
+  </select>
+  <button id="refresh">Refresh</button>
+
+  <canvas id="chart"></canvas>
+
+  <script>
+    let chart;
+
+    // Generate mock data
+    function demoData() {
+      const N = 30;
+      const data = [];
+      let load = 11000;
+      for (let i = 1; i <= N; i++) {
+        load -= Math.random() * 30;
+        data.push({
+          run: i,
+          temp_avg: 20 + Math.sin(i/5) + (Math.random() * 0.5 - 0.25),
+          load_avg: load
+        });
+      }
+      return data;
+    }
+
+    function render(labels, values, label) {
+      const ctx = document.getElementById("chart");
+      if (chart) chart.destroy();
+      chart = new Chart(ctx, {
+        type: "line",
+        data: { labels, datasets: [{ label, data: values, tension: 0.2 }] },
+        options: {
+          scales: {
+            x: { title: { display: true, text: "Run #" } },
+            y: { title: { display: true, text: label } }
+          }
+        }
+      });
+    }
+
+    function drawDemo() {
+      const choice = document.getElementById("series").value;
+      const rows = demoData();
+      const labels = rows.map(r => r.run);
+      const vals = rows.map(r => (choice === "temp" ? r.temp_avg : r.load_avg));
+      render(labels, vals, choice === "temp" ? "Temperature Avg (°C)" : "Load Avg (g)");
+    }
+
+    document.getElementById("refresh").addEventListener("click", drawDemo);
+    drawDemo();
+  </script>
+</body>
+</html>
